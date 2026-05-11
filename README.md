@@ -1,15 +1,21 @@
-# deepenc-harness
+# @opensassi/deepenc-harness
 
 Build and test tooling for the deepenc encoder — a CLI wrapper around the parent project's Makefile and CTest suite.
 
 ## Usage
 
-Run the CLI directly without cloning:
+Run directly from the deepenc project root (workspace-linked):
 
 ```bash
 npx deepenc-harness build
 npx deepenc-harness test
 npx deepenc-harness build --test
+```
+
+Or install globally from npm:
+
+```bash
+npx @opensassi/deepenc-harness build
 ```
 
 ### Commands
@@ -64,6 +70,22 @@ cd deepenc-harness
 npm install
 npm run build
 ```
+
+The parent repo uses npm workspaces to link the local harness automatically:
+
+```bash
+# From parent project root:
+npm install                    # links deepenc-harness workspace
+npx deepenc-harness build      # uses local version
+```
+
+## Publishing
+
+```bash
+npm publish --access public
+```
+
+The `prepare` lifecycle script (`npm run build`) runs automatically before publish.
 
 ## Development Workflow
 
