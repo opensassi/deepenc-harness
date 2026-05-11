@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && chmod +x lib/index.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "coverage": "node --experimental-vm-modules node_modules/.bin/jest --coverage",
     "lint": "eslint src/",
