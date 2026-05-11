@@ -6,6 +6,7 @@ import { buildCommand } from './commands/build.js';
 import { testCommand } from './commands/test.js';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 export function usage(): never {
   console.log(`
@@ -142,7 +143,8 @@ export function main(): void {
 }
 
 const __filename = fileURLToPath(import.meta.url);
-const isMain = process.argv[1] && resolve(process.argv[1]) === __filename;
+const argvPath = process.argv[1] ? resolve(process.argv[1]) : '';
+const isMain = argvPath && realpathSync(argvPath) === __filename;
 if (isMain) {
   main();
 }
