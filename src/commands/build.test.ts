@@ -91,4 +91,62 @@ describe('buildCommand', () => {
       expect.any(Object),
     );
   });
+
+  it('runs cmake configure before build with --ml flag', () => {
+    buildCommand({ variant: 'release', static: false, clean: false, ml: true });
+    expect(execSync).toHaveBeenCalledTimes(2);
+    expect(execSync).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('cmake -S . -B build/release-shared'),
+      expect.any(Object),
+    );
+    expect(execSync).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('-DVVENC_ENABLE_ML_LIGHTGBM=ON'),
+      expect.any(Object),
+    );
+    expect(execSync).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('-DVVENC_ENABLE_AI_TRAINING=ON'),
+      expect.any(Object),
+    );
+    expect(execSync).toHaveBeenNthCalledWith(
+      2,
+      'make install-release-shared',
+      expect.any(Object),
+    );
+  });
+
+  it('runs cmake configure for static build with --ml flag', () => {
+    buildCommand({ variant: 'debug', static: true, clean: false, ml: true });
+    expect(execSync).toHaveBeenCalledTimes(2);
+    expect(execSync).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('cmake -S . -B build/debug'),
+      expect.any(Object),
+    );
+    expect(execSync).toHaveBeenNthCalledWith(
+      2,
+      'make install-debug',
+      expect.any(Object),
+    );
+  });
+
+  it('exits when project root not found', async () => {
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit called');
+    }) as never);
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const mod = await import('node:fs');
+    const origExists = mod.existsSync as jest.Mock;
+    origExists.mockReturnValue(false);
+
+    expect(() => buildCommand({ variant: 'release', static: false, clean: false })).toThrow('exit called');
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('could not find project root'),
+    );
+
+    exitSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
 });

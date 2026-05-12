@@ -19,26 +19,25 @@ sequenceDiagram
     participant CMake as CMake Build
     participant VVenC as VVenC Encoder
     participant CSV as CSV Data
-    participant Python as Python LightGBM
-    participant Model as Model Files
+    participant TrainingScript as Training Script (LightGBM)
 
     Note over Harness,Model: Phase A: Training Data Generation
-    Harness->>CMake: cmake -DVVENC_ENABLE_AI_TRAINING=ON
-    CMake-->>Harness: Instrumented vvencapp
+    Harness->>CMake: cmake -DVVENC_ENABLE_AI_TRAINING=ON -DVVENC_ENABLE_ML_LIGHTGBM=ON
+    CMake-->>Harness: Instrumented vvencapp (with AI training + ML inference)
     loop for each clip x QP
-        Harness->>VVenC: vvencapp (instrumented, --frames 64)
+        Harness->>VVenC: VVENC_TRAINING_OUT=dump.csv vvencapp ...
         VVenC-->>CSV: CU feature rows (clip,poc,ctu_x,...,best_split)
     end
     Harness->>CSV: merge + shuffle + split 80/20
     CSV-->>Harness: train.csv, val.csv
 
     Note over Harness,Model: Phase B: Training
-    Harness->>Python: python3 scripts/train_lightgbm.py
-    Python->>CSV: read train/val
+    Harness->>TrainingScript: python3 scripts/train_lightgbm.py
+    TrainingScript->>CSV: read train/val
     loop for QT, BH, BV, TH, TV
-        Python->>Python: train binary classifier + early stopping
+        TrainingScript->>TrainingScript: train binary classifier + early stopping
     end
-    Python-->>Model: qt/bh/bv/th/tv_split_model.txt
+    TrainingScript-->>Model: qt/bh/bv/th/tv_split_model.txt
 
     Note over Harness,Model: Phase C: ML-accelerated Encoding
     Harness->>CMake: cmake -DVVENC_ENABLE_ML_LIGHTGBM=ON
@@ -62,15 +61,15 @@ sequenceDiagram
     participant Harness as deepenc-harness
     participant VVenC as VVenC (ML mode)
     participant CSV as Training Data
-    participant Python as Python LightGBM
+    participant TrainingScript as Training Script (LightGBM)
 
-    Note over Harness,Python: Phase E: Flywheel Iteration
+    Note over Harness,TrainingScript: Phase E: Flywheel Iteration
     Harness->>VVenC: encode with VVENC_ML_FEEDBACK=feedback.csv
     VVenC-->>Harness: feedback.csv (mispredicted CUs only)
     Harness->>CSV: append feedback rows to training set
-    Harness->>Python: retrain with augmented data
-    Python-->>Harness: updated model files
-    Note over Harness,Python: Next encode uses better models
+    Harness->>TrainingScript: retrain with augmented data
+    TrainingScript-->>Harness: updated model files
+    Note over Harness,TrainingScript: Next encode uses better models
 ```
 
 ### 1.1 Key Design Principles
@@ -155,7 +154,7 @@ type StallReason =
   | null;
 
 interface MicroArchEvent {
-  eventType: string;
+  eventType: "cache_miss" | "branch_mispredict" | "tlb_miss" | "port_conflict" | "other";
   count: number;
 }
 
@@ -556,40 +555,10 @@ interface PatchReport {
 
 ### 2.8 `MlWorkflow`
 
-Manages the LightGBM CU split prediction lifecycle: training data generation, model training, ML-accelerated encoding, benchmarking, confidence threshold tuning, and feedback-driven iteration.
+Manages the LightGBM CU split prediction lifecycle: training data generation, model training, ML-accelerated encoding, benchmarking, confidence threshold tuning, and feedback-driven iteration. Implemented as standalone module-level functions (not a class).
 
 ```typescript
-class MlWorkflow {
-  constructor(
-    readonly vvencSourcePath: string,
-    readonly buildDir: string,
-    readonly clipDir: string,
-    readonly modelDir: string,
-    readonly dataDir: string
-  );
-
-  /** Phase A: Build instrumented encoder, encode clips, collect CSV features */
-  public async dataGenerate(clips: ClipSpec[], qps: number[]): Promise<DataGenerateReport>;
-
-  /** Phase A: Merge + shuffle + split CSVs into train/val */
-  public async dataSplit(trainRatio: number): Promise<DataSplitReport>;
-
-  /** Phase B: Train 5 binary LightGBM classifiers */
-  public async train(featureCount: number, numLeaves: number): Promise<TrainReport>;
-
-  /** Phase C: Encode with ML models, report ML skip rate and timing */
-  public async encode(clip: ClipSpec, qp: number, confidence: number): Promise<EncodeReport>;
-
-  /** Phase C: Baseline vs ML comparison */
-  public async bench(clip: ClipSpec, qps: number[], confidence: number): Promise<BenchReport>;
-
-  /** Phase D: Sweep confidence thresholds */
-  public async sweep(clip: ClipSpec, qps: number[], thresholds: number[]): Promise<SweepReport>;
-
-  /** Phase E: Collect mispredictions, augment dataset, retrain */
-  public async feedback(clip: ClipSpec, qp: number, confidence: number): Promise<FeedbackReport>;
-}
-
+// Clip specification
 interface ClipSpec {
   path: string;
   name: string;
@@ -598,11 +567,25 @@ interface ClipSpec {
   fps: number;
 }
 
+// Data generation (Phase A)
+interface DataGenerateOpts {
+  clips: ClipSpec[];
+  qps: number[];
+  dataDir: string;
+  vvencappPath?: string;
+  root?: string;
+}
 interface DataGenerateReport {
-  clipResults: Map<string, { csvPath: string; rows: number }>;
+  clipResults: Record<string, { csvPath: string; rows: number }>;
   totalRows: number;
 }
+// Sets VVENC_TRAINING_OUT env var per clip×QP combination
 
+// Data split (Phase A)
+interface DataSplitOpts {
+  dataDir: string;
+  trainRatio: number;
+}
 interface DataSplitReport {
   trainPath: string;
   valPath: string;
@@ -610,11 +593,28 @@ interface DataSplitReport {
   valRows: number;
 }
 
+// Training (Phase B)
+interface TrainOpts {
+  trainPath: string;
+  valPath: string;
+  outputDir: string;
+  scriptPath?: string;
+}
 interface TrainReport {
   models: string[];
-  perSplitAuc: Map<string, number>;
+  perSplitAuc: Record<string, number>;
 }
+// Shells out to scripts/train_lightgbm.py (--train --val --output-dir)
 
+// ML encode (Phase C)
+interface EncodeOpts {
+  clip: ClipSpec;
+  qp: number;
+  modelDir: string;
+  confidence: number;
+  vvencappPath?: string;
+  root?: string;
+}
 interface EncodeReport {
   encodingTimeMs: number;
   mlSkipRate: number;
@@ -623,22 +623,53 @@ interface EncodeReport {
   psnr: number;
 }
 
+// Baseline vs ML benchmark (Phase C)
+interface BenchOpts {
+  clip: ClipSpec;
+  qps: number[];
+  modelDir: string;
+  confidence: number;
+  vvencappPath?: string;
+  root?: string;
+}
 interface BenchReport {
   baseline: EncodeReport;
   ml: EncodeReport;
   speedupPercent: number;
   bdRate: number;
 }
+// BDBR computed in TypeScript via cubic interpolation (VCEG-M34)
 
+// Sweep confidence thresholds (Phase D)
+interface SweepOpts {
+  clip: ClipSpec;
+  qps: number[];
+  modelDir: string;
+  thresholds: number[];
+  vvencappPath?: string;
+  root?: string;
+}
 interface SweepReport {
-  results: Map<number, BenchReport>;
+  results: Record<number, BenchReport>;
 }
 
+// Feedback flywheel (Phase E)
+interface FeedbackOpts {
+  clip: ClipSpec;
+  qp: number;
+  modelDir: string;
+  confidence: number;
+  dataDir: string;
+  vvencappPath?: string;
+  scriptPath?: string;
+  root?: string;
+}
 interface FeedbackReport {
   mispredictions: number;
   augmentedRows: number;
   trainReport: TrainReport;
 }
+// Sets VVENC_ML_FEEDBACK env var during encode, collects mispredicted CU rows
 ```
 
 ---
@@ -678,6 +709,7 @@ graph TB
         MlEncode["encode<br/>ML-guided CU split"]
         MlBench["bench<br/>speedup + BDBR"]
         MlSweep["sweep<br/>threshold tuning"]
+        MlFeedback["feedback<br/>flywheel iteration"]
     end
     end
 
@@ -731,8 +763,8 @@ graph TB
     MlTrain -->|5 model files| MlEncode
     MlEncode -->|compare| MlBench
     MlBench -->|drive| MlSweep
-    MlEncode -.->|mispredictions| FeedbackLoop["feedback<br/>flywheel"]
-    FeedbackLoop -.->|augment| MlTrain
+    MlEncode -.->|VVENC_ML_FEEDBACK| MlFeedback
+    MlFeedback -.->|augment training set| MlTrain
 ```
 
 ### 3.1 Container Descriptions
@@ -933,7 +965,7 @@ The competitive marketplace is **not a code artifact**. It arises organically fr
 ## 7. CLI Entry Point
 
 ```
-vvenc-harness <command> [options]
+deepenc-harness <command> [options]
 
 Commands:
   trace generate       Generate CPU state traces for a hot function
@@ -953,8 +985,8 @@ Commands:
   instrument verify    Verify instrumented encoder bitstream integrity
   instrument revert    Remove instrumentation patches
 
-  ml data generate     Encode test clips with instrumented VVenC, collect feature CSV
-  ml data split        Merge, shuffle, and split CSVs into train/val sets
+  ml data-generate     Encode test clips with instrumented VVenC, collect feature CSV via VVENC_TRAINING_OUT
+  ml data-split        Merge, shuffle, and split CSVs into train/val sets
   ml train             Train 5 binary LightGBM classifiers from training data
   ml encode            Encode a clip with ML-guided CU partitioning
   ml bench             Benchmark ML encoder vs baseline (speedup + BDBR)
@@ -965,19 +997,52 @@ Global Options:
   --config <path>      Path to configuration file
   --verbose            Enable verbose logging
   --output <format>    Output format (text, json, csv)
+
+ML Subcommand Options:
+  --clips <path>        Single YUV clip path (requires --width/--height/--fps or defaults)
+  --clips-config <path> JSON file with per-clip path/name/width/height/fps
+  --width <n>           Clip width in pixels (default: 1920)
+  --height <n>          Clip height in pixels (default: 1080)
+  --fps <n>             Clip framerate (default: 50)
+  --qps <list>          Comma-separated QP values (e.g. 22,27,32,37)
+  --train-ratio <n>     Train/val split ratio (default: 0.8)
+  --confidence <n>      ML confidence threshold (default: 0.80)
+  --thresholds <list>   Comma-separated confidence thresholds for sweep
+  --model-dir <path>    ML model directory
+  --data-dir <path>     Data directory for CSVs
+  --script-path <path>  Path to train_lightgbm.py (auto-resolved if omitted)
+  --vvencapp-path <path> Path to vvencapp binary (auto-resolved if omitted)
 ```
 
 **Example Usage**:
 
 ```bash
 # Run a full optimization session
-vvenc-harness agent session --function sad_16x16 --arch znver4 --llm my-model-v3
+deepenc-harness agent session --function sad_16x16 --arch znver4 --llm my-model-v3
 
 # Export signed benchmark result for public ledger
-vvenc-harness benchmark export --session-id abc123 --key ./lab-key.pem > result.json
+deepenc-harness benchmark export --session-id abc123 --key ./lab-key.pem > result.json
 
 # Independently verify a published result
-vvenc-harness benchmark verify --result result.json
+deepenc-harness benchmark verify --result result.json
+
+# Generate training data from test clips (single resolution)
+deepenc-harness ml data-generate --clips /vids/park_joy.yuv --qps 22,27,32,37
+
+# Generate training data with per-clip resolution config
+deepenc-harness ml data-generate --clips-config ./clips.json --qps 22,27,32,37
+# clips.json format:
+# [{"path":"/vids/park_joy.yuv","name":"park_joy","width":1920,"height":1080,"fps":50},
+#  {"path":"/vids/bqmall.yuv","name":"bqmall","width":832,"height":480,"fps":50}]
+
+# Train LightGBM models from collected data
+deepenc-harness ml train --train ./data/train.csv --val ./data/val.csv --model-dir ./models
+
+# Encode with ML-guided CU partitioning
+deepenc-harness ml encode --clip /vids/video.yuv --qp 32 --model-dir ./models --confidence 0.80
+
+# Compare ML vs baseline across 4 QPs
+deepenc-harness ml bench --clip /vids/video.yuv --qps 22,27,32,37 --model-dir ./models --confidence 0.80
 ```
 
 ---

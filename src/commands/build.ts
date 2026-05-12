@@ -17,6 +17,23 @@ export interface BuildOpts {
   static: boolean;
   clean: boolean;
   jobs?: number;
+  ml?: boolean;
+}
+
+function xCmakeConfigure(root: string, variant: string, isStatic: boolean, ml: boolean): void {
+  const suffix = isStatic ? '' : '-shared';
+  const buildDir = `build/${variant}${suffix}`;
+  const cmakeArgs = [
+    `-DCMAKE_BUILD_TYPE=${variant[0].toUpperCase() + variant.slice(1)}`,
+    isStatic ? '-DBUILD_SHARED_LIBS=0' : '-DBUILD_SHARED_LIBS=1',
+  ];
+  if (ml) {
+    cmakeArgs.push('-DVVENC_ENABLE_ML_LIGHTGBM=ON', '-DVVENC_ENABLE_AI_TRAINING=ON');
+  }
+  execSync(`cmake -S . -B ${buildDir} ${cmakeArgs.join(' ')}`, {
+    cwd: root,
+    stdio: 'inherit',
+  });
 }
 
 export function buildCommand(opts: BuildOpts): void {
@@ -29,6 +46,9 @@ export function buildCommand(opts: BuildOpts): void {
       cwd: root,
       stdio: 'inherit',
     });
+  }
+  if (opts.ml) {
+    xCmakeConfigure(root, opts.variant, !!opts.static, true);
   }
   const cmd = [`make ${target}`, jobArg].filter(Boolean).join(' ');
   execSync(cmd, {

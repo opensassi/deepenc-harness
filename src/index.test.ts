@@ -1,5 +1,15 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
+jest.unstable_mockModule('node:fs', () => ({
+  readFileSync: jest.fn(),
+  realpathSync: jest.fn(),
+  existsSync: jest.fn(),
+  mkdirSync: jest.fn(),
+  writeFileSync: jest.fn(),
+  readdirSync: jest.fn(),
+  appendFileSync: jest.fn(),
+}));
+
 describe('parseArgs', () => {
   const originalExit = process.exit;
   const originalConsoleError = console.error;
@@ -148,5 +158,139 @@ describe('parseArgs', () => {
     const { parseArgs } = await import('./index.js');
     const result = parseArgs(['build', '-t']);
     expect(result.opts).toMatchObject({ test: true });
+  });
+
+  it('parses build --ml flag', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['build', '--ml']);
+    expect(result.command).toBe('build');
+    expect((result.opts as any).ml).toBe(true);
+  });
+
+  it('parses ml command with subcommand', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['ml', 'train', '--model-dir', '/tmp/models']);
+    expect(result.command).toBe('ml');
+    expect(result.mlSubcommand).toBe('train');
+  });
+
+  it('parses ml data-generate subcommand', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['ml', 'data-generate', '--clips', '/vids', '--qps', '22,27,32,37']);
+    expect(result.command).toBe('ml');
+    expect(result.mlSubcommand).toBe('data-generate');
+  });
+
+  it('parses ml data-split with --train-ratio', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['ml', 'data-split', '--train-ratio', '0.9']);
+    expect(result.command).toBe('ml');
+    expect(result.mlSubcommand).toBe('data-split');
+    expect((result.opts as any).trainRatio).toBe(0.9);
+  });
+
+  it('exits on ml without subcommand', async () => {
+    const { parseArgs } = await import('./index.js');
+    expect(() => parseArgs(['ml'])).toThrow('process.exit called');
+    expect(consoleErrorMock).toHaveBeenCalledWith(
+      'Missing ML subcommand. Use --help for usage.',
+    );
+  });
+
+  it('exits on ml with invalid subcommand', async () => {
+    const { parseArgs } = await import('./index.js');
+    expect(() => parseArgs(['ml', 'bogus'])).toThrow('process.exit called');
+    expect(consoleErrorMock).toHaveBeenCalledWith('Unknown argument: bogus');
+  });
+
+  it('parses all ml subcommands', async () => {
+    const { parseArgs } = await import('./index.js');
+    for (const sub of ['data-generate', 'data-split', 'train', 'encode', 'bench', 'sweep', 'feedback']) {
+      jest.resetModules();
+      const result = parseArgs(['ml', sub]);
+      expect(result.mlSubcommand).toBe(sub);
+    }
+  });
+
+  it('parses ml --script-path and --vvencapp-path', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs([
+      'ml', 'train',
+      '--script-path', '/opt/scripts/train.py',
+      '--vvencapp-path', '/opt/bin/vvencapp',
+    ]);
+    expect((result.opts as any).scriptPath).toBe('/opt/scripts/train.py');
+    expect((result.opts as any).vvencappPath).toBe('/opt/bin/vvencapp');
+  });
+
+  it('parses ml options: --model-dir, --data-dir', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs([
+      'ml', 'train',
+      '--model-dir', '/tmp/models',
+      '--data-dir', '/tmp/data',
+    ]);
+    const opts = result.opts as any;
+    expect(opts.modelDir).toBe('/tmp/models');
+    expect(opts.dataDir).toBe('/tmp/data');
+  });
+
+  it('parses ml options: --qps, --thresholds, --confidence', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs([
+      'ml', 'bench',
+      '--qps', '22,27,32,37',
+      '--confidence', '0.5',
+    ]);
+    const opts = result.opts as any;
+    expect(opts.qps).toEqual([22, 27, 32, 37]);
+    expect(opts.confidence).toBe(0.5);
+  });
+
+  it('parses ml --clip and --qp for encode', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs([
+      'ml', 'encode',
+      '--clip', '/vids/test.yuv',
+      '--qp', '32',
+    ]);
+    const opts = result.opts as any;
+    expect(opts.clipPath).toBe('/vids/test.yuv');
+    expect(opts.qp).toBe(32);
+  });
+
+  it('parses ml --thresholds for sweep', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs([
+      'ml', 'sweep',
+      '--thresholds', '0.3,0.5,0.7,0.9',
+    ]);
+    expect((result.opts as any).thresholds).toEqual([0.3, 0.5, 0.7, 0.9]);
+  });
+
+  it('parses global --output csv', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['build', '--output', 'csv']);
+    expect(result.globals.output).toBe('csv');
+  });
+
+  it('parses --static and -c short options', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['build', '--static', '-c']);
+    expect((result.opts as any).static).toBe(true);
+    expect((result.opts as any).clean).toBe(true);
+  });
+
+  it('parses -v short variant and -j short jobs', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['build', '-v', 'debug', '-j', '4']);
+    expect((result.opts as any).variant).toBe('debug');
+    expect((result.opts as any).jobs).toBe(4);
+  });
+
+  it('parses -t short test flag', async () => {
+    const { parseArgs } = await import('./index.js');
+    const result = parseArgs(['build', '-t']);
+    expect((result.opts as any).test).toBe(true);
   });
 });
