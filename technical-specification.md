@@ -565,6 +565,7 @@ interface ClipSpec {
   width: number;
   height: number;
   fps: number;
+  frames?: number;  // optional per-clip frame limit (default: all)
 }
 
 // Data generation (Phase A)
@@ -1004,6 +1005,8 @@ ML Subcommand Options:
   --width <n>           Clip width in pixels (default: 1920)
   --height <n>          Clip height in pixels (default: 1080)
   --fps <n>             Clip framerate (default: 50)
+  --frames <n>          Number of frames to encode (default: all). Also settable per-clip
+                        via "frames" field in clips.json
   --qps <list>          Comma-separated QP values (e.g. 22,27,32,37)
   --train-ratio <n>     Train/val split ratio (default: 0.8)
   --confidence <n>      ML confidence threshold (default: 0.80)
@@ -1033,7 +1036,7 @@ deepenc-harness ml data-generate --clips /vids/park_joy.yuv --qps 22,27,32,37
 deepenc-harness ml data-generate --clips-config ./clips.json --qps 22,27,32,37
 # clips.json format:
 # [{"path":"/vids/park_joy.yuv","name":"park_joy","width":1920,"height":1080,"fps":50},
-#  {"path":"/vids/bqmall.yuv","name":"bqmall","width":832,"height":480,"fps":50}]
+#  {"path":"/vids/bqmall.yuv","name":"bqmall","width":832,"height":480,"fps":50,"frames":50}]
 
 # Train LightGBM models from collected data
 deepenc-harness ml train --train ./data/train.csv --val ./data/val.csv --model-dir ./models
@@ -1043,6 +1046,21 @@ deepenc-harness ml encode --clip /vids/video.yuv --qp 32 --model-dir ./models --
 
 # Compare ML vs baseline across 4 QPs
 deepenc-harness ml bench --clip /vids/video.yuv --qps 22,27,32,37 --model-dir ./models --confidence 0.80
+```
+
+## Reference
+
+The ML-guided CU partitioning approach is based on:
+
+> **I. Taabane, D. Menard, A. Mansouri, S. Sahraoui and A. Ahaitouf**, "Low Complexity Learning-Based QTMTT Partitioning Scheme for Inter Coding in VVC Encoder," in *IEEE Access*, vol. 12, pp. 141088–141103, 2024, doi: [10.1109/ACCESS.2024.3469089](https://doi.org/10.1109/ACCESS.2024.3469089).
+
+Key elements adopted from the paper:
+- Five binary LightGBM classifiers for QT/BH/BV/TH/TV split prediction
+- Top-N candidate selection (N=3) with RDO fallback
+- THNS = 0.25 no-skip threshold for early CU termination
+- Sub-CU Texture Complexity (SCTC) feature across all 6 split modes
+- Separate horizontal/vertical gradient features (not combined magnitude)
+- MV variance (H/V) for motion complexity estimation
 ```
 
 ---
