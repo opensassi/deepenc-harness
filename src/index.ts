@@ -65,9 +65,13 @@ ML Options:
   --width <n>           Clip width in pixels (default: 1920)
   --height <n>          Clip height in pixels (default: 1080)
   --fps <n>             Clip framerate (default: 50)
+  --frames <n>          Number of frames to encode (default: all)
+  --preset <string>     VVenC encoding preset (default: medium)
   --qps <list>          Comma-separated QP values (e.g. 22,27,32,37)
   --train-ratio <n>     Train/val split ratio (default: 0.8)
-  --confidence <n>      ML confidence threshold (default: 0.80)
+  --thns <n>            ML no-skip threshold (Taabane 2024) (default: 0.25)
+  --topk <n>            ML top-K candidates (default: 3)
+  --confidence <n>      Deprecated, use --thns (default: 0.80)
   --thresholds <list>   Comma-separated confidence thresholds for sweep
   --model-dir <path>    ML model directory
   --data-dir <path>     Data directory for CSVs
@@ -167,7 +171,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg === '--clips') {
       const clipPath = argv[++i];
-      mlOptions.clips = [{ path: resolve(clipPath), name: basename(clipPath).replace(/\.\w+$/, ''), width: 1920, height: 1080, fps: 50 }];
+      mlOptions.clips = [{ path: resolve(clipPath), name: basename(clipPath).replace(/\.\w+$/, ''), width: 1920, height: 1080, fps: 50, frames: mlOptions.clipFrames, preset: mlOptions.preset }];
       continue;
     }
     if (arg === '--clips-config') {
@@ -182,6 +186,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg === '--train-ratio') {
       mlOptions.trainRatio = parseFloat(argv[++i]);
+      continue;
+    }
+    if (arg === '--thns') {
+      mlOptions.thns = parseFloat(argv[++i]);
+      continue;
+    }
+    if (arg === '--topk') {
+      mlOptions.topk = parseInt(argv[++i], 10);
       continue;
     }
     if (arg === '--confidence') {
@@ -222,6 +234,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg === '--fps') {
       mlOptions.clipFps = parseInt(argv[++i], 10);
+      continue;
+    }
+    if (arg === '--frames') {
+      mlOptions.clipFrames = parseInt(argv[++i], 10);
+      continue;
+    }
+    if (arg === '--preset') {
+      mlOptions.preset = argv[++i];
       continue;
     }
     if (arg === '--qp') {
@@ -287,6 +307,8 @@ function xMakeClip(path: string, mlOpts: MlOptions): import('./types.js').ClipSp
     width: mlOpts.clipWidth ?? 1920,
     height: mlOpts.clipHeight ?? 1080,
     fps: mlOpts.clipFps ?? 50,
+    frames: mlOpts.clipFrames,
+    preset: mlOpts.preset,
   };
 }
 
@@ -335,6 +357,8 @@ function xDispatchMl(subcommand: MlSubcommand, mlOpts: MlOptions): void {
         qp: mlOpts.qp ?? 32,
         modelDir: mlOpts.modelDir ?? './ml-models',
         confidence: mlOpts.confidence ?? 0.80,
+        thns: mlOpts.thns ?? 0.25,
+        topk: mlOpts.topk ?? 3,
         vvencappPath: mlOpts.vvencappPath,
       });
       console.log(`Encode: ${report.encodingTimeMs}ms, bitrate=${report.bitrate}, PSNR=${report.psnr}`);
@@ -351,6 +375,8 @@ function xDispatchMl(subcommand: MlSubcommand, mlOpts: MlOptions): void {
         qps: mlOpts.qps ?? [22, 27, 32, 37],
         modelDir: mlOpts.modelDir ?? './ml-models',
         confidence: mlOpts.confidence ?? 0.80,
+        thns: mlOpts.thns ?? 0.25,
+        topk: mlOpts.topk ?? 3,
         vvencappPath: mlOpts.vvencappPath,
       });
       console.log(`Bench: speedup=${report.speedupPercent.toFixed(1)}%, BDBR=${report.bdRate.toFixed(2)}%`);
@@ -367,6 +393,8 @@ function xDispatchMl(subcommand: MlSubcommand, mlOpts: MlOptions): void {
         qps: mlOpts.qps ?? [22, 27, 32, 37],
         modelDir: mlOpts.modelDir ?? './ml-models',
         thresholds: mlOpts.thresholds ?? [0.3, 0.5, 0.7],
+        thns: mlOpts.thns ?? 0.25,
+        topk: mlOpts.topk ?? 3,
         vvencappPath: mlOpts.vvencappPath,
       });
       console.log(`Sweep: ${Object.keys(report.results).length} thresholds`);
@@ -383,6 +411,8 @@ function xDispatchMl(subcommand: MlSubcommand, mlOpts: MlOptions): void {
         qp: mlOpts.qp ?? 32,
         modelDir: mlOpts.modelDir ?? './ml-models',
         confidence: mlOpts.confidence ?? 0.80,
+        thns: mlOpts.thns ?? 0.25,
+        topk: mlOpts.topk ?? 3,
         dataDir: mlOpts.dataDir ?? './ml-data',
         vvencappPath: mlOpts.vvencappPath,
         scriptPath: mlOpts.scriptPath,

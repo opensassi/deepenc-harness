@@ -38,12 +38,16 @@ export interface MlOptions {
   qps?: number[];
   trainRatio?: number;
   confidence?: number;
+  thns?: number;
+  topk?: number;
   thresholds?: number[];
   modelDir?: string;
   dataDir?: string;
   clipWidth?: number;
   clipHeight?: number;
   clipFps?: number;
+  clipFrames?: number;
+  preset?: string;
 }
 
 export interface ClipSpec {
@@ -52,6 +56,8 @@ export interface ClipSpec {
   width: number;
   height: number;
   fps: number;
+  frames?: number;
+  preset?: string;
 }
 
 export interface DataGenerateReport {

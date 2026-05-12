@@ -38,6 +38,8 @@ export interface EncodeOpts {
   qp: number;
   modelDir: string;
   confidence: number;
+  thns: number;
+  topk: number;
   vvencappPath?: string;
   root?: string;
 }
@@ -47,6 +49,8 @@ export interface BenchOpts {
   qps: number[];
   modelDir: string;
   confidence: number;
+  thns: number;
+  topk: number;
   vvencappPath?: string;
   root?: string;
 }
@@ -56,6 +60,8 @@ export interface SweepOpts {
   qps: number[];
   modelDir: string;
   thresholds: number[];
+  thns: number;
+  topk: number;
   vvencappPath?: string;
   root?: string;
 }
@@ -65,6 +71,8 @@ export interface FeedbackOpts {
   qp: number;
   modelDir: string;
   confidence: number;
+  thns: number;
+  topk: number;
   dataDir: string;
   vvencappPath?: string;
   scriptPath?: string;
@@ -96,17 +104,25 @@ function xRunEncode(
   qp: number,
   modelDir: string | undefined,
   confidence: number | undefined,
+  thns: number | undefined,
+  topk: number | undefined,
   vvencappPath: string,
 ): EncodeReport {
   const args = [
     `-i "${clip.path}"`,
     `-q ${qp}`,
     `-s ${clip.width}x${clip.height}`,
-    `-f ${clip.fps}`,
+    `-r ${clip.fps}`,
     '-o', '/dev/null',
   ];
+  if (clip.frames) {
+    args.push(`--frames ${clip.frames}`);
+  }
+  if (clip.preset) {
+    args.push(`--preset ${clip.preset}`);
+  }
   if (modelDir) {
-    args.push(`--ml-model-dir "${modelDir}"`, `--ml-confidence ${confidence ?? 0.80}`);
+    args.push('--ml-enable 1', `--ml-model-dir "${modelDir}"`, `--ml-thns ${thns ?? 0.25}`, `--ml-topk ${topk ?? 3}`);
   }
   const cmd = `${vvencappPath} ${args.join(' ')} 2>&1`;
   const output = execSync(cmd, { encoding: 'utf-8' });
@@ -182,12 +198,14 @@ export function dataGenerateCommand(opts: DataGenerateOpts): DataGenerateReport 
   for (const clip of opts.clips) {
     for (const qp of opts.qps) {
       const csvPath = resolve(opts.dataDir, `${clip.name}_qp${qp}.csv`);
+      const framesArg = clip.frames ? ` --frames ${clip.frames}` : '';
+      const presetArg = clip.preset ? ` --preset ${clip.preset}` : '';
       execSync(
-        `${vvencapp} -i "${clip.path}" -q ${qp} -s ${clip.width}x${clip.height} -f ${clip.fps} -o /dev/null`,
+        `${vvencapp} -i "${clip.path}" -q ${qp} -s ${clip.width}x${clip.height} -r ${clip.fps}${framesArg}${presetArg} -o /dev/null`,
         { stdio: 'inherit', cwd: root, env: { ...process.env, VVENC_TRAINING_OUT: csvPath } },
       );
       const rows = existsSync(csvPath)
-        ? readFileSync(csvPath, 'utf-8').trim().split('\n').length - 1
+        ? parseInt(execSync(`wc -l < "${csvPath}"`, { encoding: 'utf-8' }).trim(), 10) - 1
         : 0;
       if (!clipResults[clip.name]) {
         clipResults[clip.name] = { csvPath, rows: 0 };
@@ -203,34 +221,36 @@ export function dataGenerateCommand(opts: DataGenerateOpts): DataGenerateReport 
 
 export function dataSplitCommand(opts: DataSplitOpts): DataSplitReport {
   const csvFiles = readdirSync(opts.dataDir).filter(f => f.endsWith('.csv'));
-  const allRows: string[] = [];
-  let header = '';
-
-  for (const file of csvFiles) {
-    const content = readFileSync(resolve(opts.dataDir, file), 'utf-8').trim();
-    const lines = content.split('\n');
-    if (lines.length < 2) continue;
-    if (!header) header = lines[0];
-    for (let i = 1; i < lines.length; i++) {
-      allRows.push(lines[i]);
-    }
+  if (csvFiles.length === 0) {
+    console.error('Error: no CSV files found in', opts.dataDir);
+    process.exit(1);
   }
 
-  for (let i = allRows.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [allRows[i], allRows[j]] = [allRows[j], allRows[i]];
-  }
+  const header = execSync(`head -1 "${resolve(opts.dataDir, csvFiles[0])}"`, { encoding: 'utf-8' }).trim();
 
-  const splitIdx = Math.floor(allRows.length * opts.trainRatio);
-  const trainRows = allRows.slice(0, splitIdx);
-  const valRows = allRows.slice(splitIdx);
-
+  const merged = resolve(opts.dataDir, '_merged.csv');
   const trainPath = resolve(opts.dataDir, 'train.csv');
   const valPath = resolve(opts.dataDir, 'val.csv');
-  writeFileSync(trainPath, [header, ...trainRows].join('\n') + '\n');
-  writeFileSync(valPath, [header, ...valRows].join('\n') + '\n');
 
-  return { trainPath, valPath, trainRows: trainRows.length, valRows: valRows.length };
+  const files = csvFiles.map(f => resolve(opts.dataDir, f)).join(' ');
+  execSync(`tail -q -n +2 ${files} > "${merged}"`, { stdio: 'pipe' });
+
+  const totalLines = parseInt(execSync(`wc -l < "${merged}"`, { encoding: 'utf-8' }).trim(), 10);
+  const trainLines = Math.floor(totalLines * opts.trainRatio);
+  const valRows = totalLines - trainLines;
+
+  const shuffled = resolve(opts.dataDir, '_shuffled.csv');
+  execSync(`shuf "${merged}" > "${shuffled}"`, { stdio: 'pipe' });
+
+  execSync(`head -${trainLines} "${shuffled}" > "${trainPath}"`, { stdio: 'pipe' });
+  execSync(`tail -${valRows} "${shuffled}" > "${valPath}"`, { stdio: 'pipe' });
+
+  execSync(`echo "${header}" | cat - "${trainPath}" > /tmp/_train_tmp && mv /tmp/_train_tmp "${trainPath}"`, { stdio: 'pipe' });
+  execSync(`echo "${header}" | cat - "${valPath}" > /tmp/_val_tmp && mv /tmp/_val_tmp "${valPath}"`, { stdio: 'pipe' });
+
+  execSync(`rm -f "${merged}" "${shuffled}"`, { stdio: 'pipe' });
+
+  return { trainPath, valPath, trainRows: trainLines, valRows };
 }
 
 export function trainCommand(opts: TrainOpts): TrainReport {
@@ -244,7 +264,7 @@ export function trainCommand(opts: TrainOpts): TrainReport {
   mkdirSync(opts.outputDir, { recursive: true });
   const stdout = execSync(cmd, { encoding: 'utf-8' });
 
-  const models = ['QT', 'BH', 'BV', 'TH', 'TV'].map(
+  const models = ['qt', 'bh', 'bv', 'th', 'tv'].map(
     name => resolve(opts.outputDir, `${name}_split_model.txt`),
   );
   const perSplitAuc: Record<string, number> = {};
@@ -260,7 +280,7 @@ export function trainCommand(opts: TrainOpts): TrainReport {
 export function encodeCommand(opts: EncodeOpts): EncodeReport {
   const root = opts.root ?? findProjectRoot();
   const vvencapp = xResolveVvencapp(opts.vvencappPath, root);
-  return xRunEncode(opts.clip, opts.qp, opts.modelDir, opts.confidence, vvencapp);
+  return xRunEncode(opts.clip, opts.qp, opts.modelDir, opts.confidence, opts.thns, opts.topk, vvencapp);
 }
 
 export function benchCommand(opts: BenchOpts): BenchReport {
@@ -271,10 +291,10 @@ export function benchCommand(opts: BenchOpts): BenchReport {
   const mlPoints: Array<{ bitrate: number; psnr: number; timeMs: number }> = [];
 
   for (const qp of opts.qps) {
-    const baseResult = xRunEncode(opts.clip, qp, undefined, undefined, vvencapp);
+    const baseResult = xRunEncode(opts.clip, qp, undefined, undefined, undefined, undefined, vvencapp);
     baselinePoints.push({ bitrate: baseResult.bitrate, psnr: baseResult.psnr, timeMs: baseResult.encodingTimeMs });
 
-    const mlResult = xRunEncode(opts.clip, qp, opts.modelDir, opts.confidence, vvencapp);
+    const mlResult = xRunEncode(opts.clip, qp, opts.modelDir, opts.confidence, opts.thns, opts.topk, vvencapp);
     mlPoints.push({ bitrate: mlResult.bitrate, psnr: mlResult.psnr, timeMs: mlResult.encodingTimeMs });
   }
 
@@ -300,6 +320,8 @@ export function sweepCommand(opts: SweepOpts): SweepReport {
       qps: opts.qps,
       modelDir: opts.modelDir,
       confidence: threshold,
+      thns: opts.thns,
+      topk: opts.topk,
       vvencappPath: opts.vvencappPath,
       root: opts.root,
     });
@@ -316,11 +338,19 @@ export function feedbackCommand(opts: FeedbackOpts): FeedbackReport {
     `-i "${opts.clip.path}"`,
     `-q ${opts.qp}`,
     `-s ${opts.clip.width}x${opts.clip.height}`,
-    `-f ${opts.clip.fps}`,
+    `-r ${opts.clip.fps}`,
     `--ml-model-dir "${opts.modelDir}"`,
-    `--ml-confidence ${opts.confidence ?? 0.80}`,
+    '--ml-enable 1',
+    `--ml-thns ${opts.thns ?? 0.25}`,
+    `--ml-topk ${opts.topk ?? 3}`,
     '-o', '/dev/null',
   ];
+  if (opts.clip.frames) {
+    args.push(`--frames ${opts.clip.frames}`);
+  }
+  if (opts.clip.preset) {
+    args.push(`--preset ${opts.clip.preset}`);
+  }
   execSync(`${vvencapp} ${args.join(' ')} 2>&1`, {
     stdio: 'inherit',
     cwd: root,
