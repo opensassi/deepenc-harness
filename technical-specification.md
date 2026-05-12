@@ -11,6 +11,68 @@ This specification defines the open‑source tooling that transforms the VVenC H
 
 Critically, the marketplace itself is **not a piece of software we build**. It emerges from the convergence of these tools, the open benchmark data they produce, and the economic incentives of AI labs, content distributors, hardware vendors, and archivists. No central platform, registry, or leaderboard service is required; the market self‑organises around a trustless, reproducible benchmark format.
 
+### 4.3 ML Training and Encoding Flow
+
+```mermaid
+sequenceDiagram
+    participant Harness as deepenc-harness
+    participant CMake as CMake Build
+    participant VVenC as VVenC Encoder
+    participant CSV as CSV Data
+    participant Python as Python LightGBM
+    participant Model as Model Files
+
+    Note over Harness,Model: Phase A: Training Data Generation
+    Harness->>CMake: cmake -DVVENC_ENABLE_AI_TRAINING=ON
+    CMake-->>Harness: Instrumented vvencapp
+    loop for each clip x QP
+        Harness->>VVenC: vvencapp (instrumented, --frames 64)
+        VVenC-->>CSV: CU feature rows (clip,poc,ctu_x,...,best_split)
+    end
+    Harness->>CSV: merge + shuffle + split 80/20
+    CSV-->>Harness: train.csv, val.csv
+
+    Note over Harness,Model: Phase B: Training
+    Harness->>Python: python3 scripts/train_lightgbm.py
+    Python->>CSV: read train/val
+    loop for QT, BH, BV, TH, TV
+        Python->>Python: train binary classifier + early stopping
+    end
+    Python-->>Model: qt/bh/bv/th/tv_split_model.txt
+
+    Note over Harness,Model: Phase C: ML-accelerated Encoding
+    Harness->>CMake: cmake -DVVENC_ENABLE_ML_LIGHTGBM=ON
+    CMake-->>Harness: ML-enabled vvencapp
+    Harness->>VVenC: vvencapp --ml-model-dir ./models --ml-confidence 0.80
+    VVenC-->>Harness: encoded bitstream + timing
+
+    Note over Harness,Model: Phase D: Threshold Sweep
+    loop for each confidence threshold
+        Harness->>VVenC: encode at 4 QPs (baseline)
+        Harness->>VVenC: encode at 4 QPs (ML)
+        Harness->>Harness: compute speedup + BDBR
+    end
+    Harness-->>Harness: speed/quality curve table
+```
+
+### 4.4 Feedback Flywheel
+
+```mermaid
+sequenceDiagram
+    participant Harness as deepenc-harness
+    participant VVenC as VVenC (ML mode)
+    participant CSV as Training Data
+    participant Python as Python LightGBM
+
+    Note over Harness,Python: Phase E: Flywheel Iteration
+    Harness->>VVenC: encode with VVENC_ML_FEEDBACK=feedback.csv
+    VVenC-->>Harness: feedback.csv (mispredicted CUs only)
+    Harness->>CSV: append feedback rows to training set
+    Harness->>Python: retrain with augmented data
+    Python-->>Harness: updated model files
+    Note over Harness,Python: Next encode uses better models
+```
+
 ### 1.1 Key Design Principles
 
 - **Open Traces, Open Weights**: All training traces and benchmark results are public.
@@ -492,6 +554,93 @@ interface PatchReport {
 }
 ```
 
+### 2.8 `MlWorkflow`
+
+Manages the LightGBM CU split prediction lifecycle: training data generation, model training, ML-accelerated encoding, benchmarking, confidence threshold tuning, and feedback-driven iteration.
+
+```typescript
+class MlWorkflow {
+  constructor(
+    readonly vvencSourcePath: string,
+    readonly buildDir: string,
+    readonly clipDir: string,
+    readonly modelDir: string,
+    readonly dataDir: string
+  );
+
+  /** Phase A: Build instrumented encoder, encode clips, collect CSV features */
+  public async dataGenerate(clips: ClipSpec[], qps: number[]): Promise<DataGenerateReport>;
+
+  /** Phase A: Merge + shuffle + split CSVs into train/val */
+  public async dataSplit(trainRatio: number): Promise<DataSplitReport>;
+
+  /** Phase B: Train 5 binary LightGBM classifiers */
+  public async train(featureCount: number, numLeaves: number): Promise<TrainReport>;
+
+  /** Phase C: Encode with ML models, report ML skip rate and timing */
+  public async encode(clip: ClipSpec, qp: number, confidence: number): Promise<EncodeReport>;
+
+  /** Phase C: Baseline vs ML comparison */
+  public async bench(clip: ClipSpec, qps: number[], confidence: number): Promise<BenchReport>;
+
+  /** Phase D: Sweep confidence thresholds */
+  public async sweep(clip: ClipSpec, qps: number[], thresholds: number[]): Promise<SweepReport>;
+
+  /** Phase E: Collect mispredictions, augment dataset, retrain */
+  public async feedback(clip: ClipSpec, qp: number, confidence: number): Promise<FeedbackReport>;
+}
+
+interface ClipSpec {
+  path: string;
+  name: string;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+interface DataGenerateReport {
+  clipResults: Map<string, { csvPath: string; rows: number }>;
+  totalRows: number;
+}
+
+interface DataSplitReport {
+  trainPath: string;
+  valPath: string;
+  trainRows: number;
+  valRows: number;
+}
+
+interface TrainReport {
+  models: string[];
+  perSplitAuc: Map<string, number>;
+}
+
+interface EncodeReport {
+  encodingTimeMs: number;
+  mlSkipRate: number;
+  avgConfidence: number;
+  bitrate: number;
+  psnr: number;
+}
+
+interface BenchReport {
+  baseline: EncodeReport;
+  ml: EncodeReport;
+  speedupPercent: number;
+  bdRate: number;
+}
+
+interface SweepReport {
+  results: Map<number, BenchReport>;
+}
+
+interface FeedbackReport {
+  mispredictions: number;
+  augmentedRows: number;
+  trainReport: TrainReport;
+}
+```
+
 ---
 
 ## 3. System Architecture
@@ -516,11 +665,20 @@ graph TB
             TestPyr["TestPyramid"]
             OptAgent["OptimizationAgent"]
         end
-        subgraph DataFlywheel["Data Flywheel"]
-            InstrEncoder["EncoderInstrumentation"]
-            MetadataCollector["DistributedMetadataCollector"]
-            WorldModelCorpus["VideoWorldModelCorpus"]
-        end
+    subgraph DataFlywheel["Data Flywheel"]
+        InstrEncoder["EncoderInstrumentation"]
+        MetadataCollector["DistributedMetadataCollector"]
+        WorldModelCorpus["VideoWorldModelCorpus"]
+    end
+
+    subgraph MlWorkflow["ML Workflow (LightGBM)"]
+        MlDataGen["data generate<br/>instrumented encode"]
+        MlDataSplit["data split<br/>train/val split"]
+        MlTrain["train<br/>5x binary classifiers"]
+        MlEncode["encode<br/>ML-guided CU split"]
+        MlBench["bench<br/>speedup + BDBR"]
+        MlSweep["sweep<br/>threshold tuning"]
+    end
     end
 
     subgraph EmergentMarketLayer["Emergent Market Layer (NOT delivered)"]
@@ -566,6 +724,15 @@ graph TB
     HardwareVendor -.->|monitors demand signal| IndependentBoard
 
     AILab -.->|downloads| WorldModelCorpus
+
+    %% ML Workflow connections
+    MlDataGen -->|CSV rows| MlDataSplit
+    MlDataSplit -->|train/val| MlTrain
+    MlTrain -->|5 model files| MlEncode
+    MlEncode -->|compare| MlBench
+    MlBench -->|drive| MlSweep
+    MlEncode -.->|mispredictions| FeedbackLoop["feedback<br/>flywheel"]
+    FeedbackLoop -.->|augment| MlTrain
 ```
 
 ### 3.1 Container Descriptions
@@ -578,6 +745,7 @@ graph TB
 | **EncoderInstrumentation**       | Patches VVenC to emit structural encoding logs.                                                                                                     |
 | **DistributedMetadataCollector** | Anonymises and contributes metadata to the corpus.                                                                                                  |
 | **VideoWorldModelCorpus**        | Amasses and serves the open training corpus for video world models.                                                                                 |
+| **MlWorkflow**                   | Manages LightGBM CU split prediction lifecycle: instrumented encode → CSV merge → model training → ML encode → benchmark → sweep → feedback loop.  |
 | **Emergent Market Layer**        | **Not part of the harness.** Third parties independently publish, verify, and rank `BenchmarkResult` objects using the standardised, signed format. |
 
 ---
@@ -721,6 +889,14 @@ The competitive marketplace is **not a code artifact**. It arises organically fr
 | **VideoWorldModelCorpus**        | `test_exportDataset_jsonl`                   | Export matching query results                   | Valid JSONL with correct record count                                    |
 | **EncoderInstrumentation**       | `test_applyPatches_modifiesSource`           | Apply patches                                   | Source files changed, patch report lists files                           |
 | **EncoderInstrumentation**       | `test_verifyBitstreamIntegrity`              | Bitstream from patched vs. clean                | Bit-exact match returns true                                             |
+| **MlWorkflow**                  | `test_dataGenerate_buildsEncoder`            | Generates instrumented encoder build            | Binary exists at expected path                                            |
+| **MlWorkflow**                  | `test_dataGenerate_encodesClips`             | Encodes a clip, CSV produced                    | CSV exists with feature columns                                           |
+| **MlWorkflow**                  | `test_dataSplit_ratio`                       | Split 100-row CSV 80/20                         | Train=80, val=20                                                          |
+| **MlWorkflow**                  | `test_train_modelsCreated`                   | Train with valid CSV                            | 5 model files exist                                                       |
+| **MlWorkflow**                  | `test_train_missingData`                     | No CSV                                          | Returns error, no crash                                                   |
+| **MlWorkflow**                  | `test_encode_mlEnabled`                      | Encode with ML                                  | Non-zero ML skip rate                                                     |
+| **MlWorkflow**                  | `test_bench_speedupPositive`                 | Compare baseline vs ML                          | Speedup > 0%                                                              |
+| **MlWorkflow**                  | `test_sweep_monotonic`                       | 3 thresholds                                    | Higher threshold leads to higher BDBR                                     |
 
 ### 6.2 End-to-End Testing Strategy
 
@@ -776,6 +952,14 @@ Commands:
   instrument apply     Apply instrumentation patches to VVenC source
   instrument verify    Verify instrumented encoder bitstream integrity
   instrument revert    Remove instrumentation patches
+
+  ml data generate     Encode test clips with instrumented VVenC, collect feature CSV
+  ml data split        Merge, shuffle, and split CSVs into train/val sets
+  ml train             Train 5 binary LightGBM classifiers from training data
+  ml encode            Encode a clip with ML-guided CU partitioning
+  ml bench             Benchmark ML encoder vs baseline (speedup + BDBR)
+  ml sweep             Sweep confidence thresholds, produce speed/quality curve
+  ml feedback          Collect mispredictions, augment dataset, retrain model
 
 Global Options:
   --config <path>      Path to configuration file
