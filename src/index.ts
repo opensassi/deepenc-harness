@@ -31,12 +31,21 @@ Usage:
   deepenc-harness test  [options]
   deepenc-harness build --test [options]
   deepenc-harness ml <subcommand> [options]
+  deepenc-harness dashboard [options]
   deepenc-harness --help
 
 Commands:
   build                 Build the parent encoder library
   test                  Run the parent test suite
   ml                    ML workflow commands (see below)
+  dashboard             Start the localhost web dashboard
+
+Dashboard Options:
+  --port <n>            HTTP server port (default: 3000)
+  --host <addr>         Bind address (default: 127.0.0.1)
+  --sessions <path>     Path to sessions directory (default: ../sessions)
+  --repo <path>         Path to git repository root (default: parent of CWD)
+  --git-since <date>    Only show git commits after this date (e.g. 2026-05-01)
 
 Build Options:
   -v, --variant <type>  Build variant: release, debug, relwithdebinfo (default: release)
@@ -87,10 +96,18 @@ Global Options:
   process.exit(0);
 }
 
+export interface DashboardCliOptions {
+  port: number;
+  host: string;
+  sessions?: string;
+  repo?: string;
+  gitSince?: string;
+}
+
 export interface ParsedArgs {
   command: string;
   globals: GlobalOptions;
-  opts: BuildOptions | TestOptions | MlOptions;
+  opts: BuildOptions | TestOptions | MlOptions | DashboardCliOptions;
   mlSubcommand?: MlSubcommand;
 }
 
@@ -109,6 +126,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     subcommand: 'data-generate',
   };
 
+  const dashDefaults: DashboardCliOptions = { port: 3000, host: '127.0.0.1' };
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if ((arg === 'build' || arg === 'test') && !command) {
@@ -123,6 +142,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         mlOptions.subcommand = mlSubcommand;
         i++;
       }
+      continue;
+    }
+    if (arg === 'dashboard' && !command) {
+      command = 'dashboard';
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -248,6 +271,26 @@ export function parseArgs(argv: string[]): ParsedArgs {
       mlOptions.qp = parseInt(argv[++i], 10);
       continue;
     }
+    if (arg === '--port') {
+      dashDefaults.port = parseInt(argv[++i], 10);
+      continue;
+    }
+    if (arg === '--host') {
+      dashDefaults.host = argv[++i];
+      continue;
+    }
+    if (arg === '--sessions') {
+      dashDefaults.sessions = resolve(argv[++i]);
+      continue;
+    }
+    if (arg === '--repo') {
+      dashDefaults.repo = resolve(argv[++i]);
+      continue;
+    }
+    if (arg === '--git-since') {
+      dashDefaults.gitSince = argv[++i];
+      continue;
+    }
     console.error(`Unknown argument: ${arg}`);
     process.exit(1);
   }
@@ -265,7 +308,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return {
     command,
     globals,
-    opts: command === 'ml' ? mlOptions : { ...bldDefaults },
+    opts: command === 'ml' ? mlOptions : command === 'dashboard' ? dashDefaults : { ...bldDefaults },
     mlSubcommand,
   };
 }
@@ -297,6 +340,18 @@ export function main(): void {
   } else if (command === 'ml') {
     const mlOpts = opts as MlOptions;
     xDispatchMl(mlSubcommand!, mlOpts);
+  } else if (command === 'dashboard') {
+    const dopts = opts as DashboardCliOptions;
+    // @ts-ignore - dashboard module is compiled separately
+    import('../dashboard/dist/index.js').then((mod: { startDashboard: (o: Record<string, unknown>) => void }) => {
+      mod.startDashboard({
+        port: dopts.port,
+        host: dopts.host,
+        sessionsDir: dopts.sessions,
+        repoDir: dopts.repo,
+        gitSince: dopts.gitSince,
+      });
+    });
   }
 }
 
